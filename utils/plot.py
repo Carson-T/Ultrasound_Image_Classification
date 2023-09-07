@@ -24,6 +24,7 @@ def plot_matrix(y_true, y_pred, labels_name, savepath, axis_labels=None):
     plt.yticks(num_local, axis_labels)  # 将标签印在y轴坐标上
     plt.ylabel('True label')
     plt.xlabel('Predicted label')
+    plt.tight_layout()
 
 # 将百分比打印在相应的格子内，大于thresh的用白字，小于的用黑字
     for i in range(np.shape(cm)[0]):

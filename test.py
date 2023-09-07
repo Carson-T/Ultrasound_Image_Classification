@@ -7,7 +7,8 @@ import timm          # version >= 0.92
 import albumentations
 from albumentations import pytorch as AT
 import ttach as tta
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, confusion_matrix
+from utils.plot import plot_matrix
 import cv2
 import os
 import pandas as pd
@@ -22,7 +23,13 @@ class TestDataset(Dataset):
             self.class_dict = {"1.静息-标准": 0, "2.静息-非标准": 1}  # label dictionary 要把各个测试集里的类别文件夹名字统一
         else:
             self.class_dict = {"3.Valsalva-标准": 0, "4.Valsalva-非标准": 1}  # label dictionary
-        self.groups = ["白银", "佛山市一", "广医附三", "湖南省妇幼", "岭南迈瑞"]
+        self.groups = [
+                        "白银",
+                        "佛山市一",
+                        "广医附三", 
+                        "湖南省妇幼",    
+                        "岭南迈瑞"
+                        ]
         self.transform = transform
         self.img_paths, self.labels = self._make_dataset()  # make dataset
 
@@ -37,7 +44,7 @@ class TestDataset(Dataset):
         if self.transform:
             # img = self.transform(img)
             img = self.transform(image=img)["image"]
-        return img, label
+        return img, label, img_path[20:]
 
     def _make_dataset(self):
         img_paths = []
@@ -84,19 +91,21 @@ def load_model(model, model_path, device):
 def test(test_loader, model, device):
     model.eval()
     with torch.no_grad():
-        for i, (images, targets) in enumerate(tqdm(test_loader)):
+        for i, (images, targets, img_paths) in enumerate(tqdm(test_loader)):
             images = images.to(device)
             targets = targets.to(device)
             output = model(images)
             if i == 0:
                 all_outputs = output
                 all_targets = targets
+                all_img_paths = list(img_paths)
             else:
                 all_outputs = torch.cat((all_outputs, output))
                 all_targets = torch.cat((all_targets, targets))
+                all_img_paths.extend(list(img_paths))
     all_outputs = F.softmax(all_outputs, dim=1)
 
-    return all_outputs.cpu().detach(), all_targets.cpu().detach()
+    return all_outputs.cpu().detach(), all_targets.cpu().detach(), all_img_paths
 
 
 if __name__ == '__main__':
@@ -149,7 +158,7 @@ if __name__ == '__main__':
     for i in range(len(model_paths)):
         load_model(models[i], model_paths[i], device)
         tta_model = tta.ClassificationTTAWrapper(models[i], tta_transforms)
-        outputs, targets = test(test_loader, tta_model, device)
+        outputs, targets, img_paths = test(test_loader, tta_model, device)
         preds = torch.argmax(outputs, dim=1)
         acc = (preds == targets).sum().item() / len(targets)
         auc = roc_auc_score(targets, outputs[:, 1])
@@ -158,11 +167,43 @@ if __name__ == '__main__':
         all_acc.append(acc)
         all_auc.append(auc)
 
+    print("all_acc:",all_acc)
+    print("all_auc:",all_auc)
 
-    print(all_acc)
-    print(all_auc)
+    # vote
+    voted_preds = []
+    for i in range(len(targets)):
+        if all_preds[0][i] + all_preds[1][i] + all_preds[2][i] + all_preds[3][i] + all_preds[4][i] >= 3:
+            voted_preds.append(1)
+        else:
+            voted_preds.append(0)
 
-    average_outputs = sum(all_outputs)/len(targets)
+    average_outputs = sum(all_outputs)/len(all_outputs)
+
+    cm = confusion_matrix(targets, voted_preds)
+    print(cm)
+    tp = cm[0][0]
+    fp = cm[1][0]
+    tn = cm[1][1]
+    fn = cm[0][1]
+    recall = tp/(tp+fn)
+    precision = tp/(tp+fp)
+    specificity = tn/(tn+fp)
+    npv = tn/(tn+fn)
+
+    average_acc = (torch.tensor(voted_preds) == targets).sum().item() / len(targets)
     average_auc = roc_auc_score(targets, average_outputs[:, 1])
-    print(average_auc)
+    print("recall:",recall)
+    print("precision:",precision)
+    print("specificity:",specificity)
+    print("npv:",npv)
+    print("average_acc:",average_acc)
+    print("average_auc:",average_auc)
 
+    # plot_matrix(targets, voted_preds, [0, 1],
+    #                     "jingxi_confusion_matrix.jpg",
+    #                     ['standards', 'non-standards'])
+    
+    probility, _ = torch.max(average_outputs,1)
+    df = pd.DataFrame({"img_path":img_paths,"prob":probility.tolist(),"pred":voted_preds,"label":targets})
+    df.to_csv("../jingxi_predict.csv",index=False,encoding="gbk")
